@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "langchainer"
+version = "0.1.0"
+description = ""
+authors = ["Pavel <66and55@gmail.com>"]
+readme = "README.md"
+packages = [{include = "langchainer"}]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+pydantic = "^2.10.4"
+langchain = "^0.3.13"
+langchain-mistralai = "^0.2.4"
+rich = "^13.9.4"
+
+[project.optional-dependencies]
+rich = ["rich"]
+mistral = ["langchain-mistralai"]
+openai = ["langchain-openai"]
+anthropic = ["langchain-anthropic"]
+google_genai = ["langchain-google-genai"]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.4"
+python-dotenv = "^1.0.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
