@@ -1,26 +1,37 @@
 """
-This module is written for Python 3.10+ and utilizes modern Python best practices.
+This module provides a convenient interface for interacting with LLMs utilizing the LangChain library.
 
-Key features and guidelines:
+Key Features:
+- Supports structured and unstructured LLM responses.
+- Implements retry mechanisms for handling transient errors.
+
+Example:
+    client = LLMClient("mistral/mistral-small-latest")
+    response = client.run("What is the meaning of life?")
+    print(response)
+"""
+
+"""
+Contributors guidelines:
 
 *   **Python Version:** Requires Python 3.10 or later. Avoid patterns common in Python 3.6-3.9.
 *   **Type Hinting:** Uses modern type hinting syntax, including PEP 604 (Union Types - `X | Y`), PEP 585 (Type Hinting Generics In Standard Collections), PEP 673 (Self Type), and others. Use type hints extensively.
 *   **Data Structures:** Prefer data classes (PEP 557), `typing.NamedTuple`, or standard dictionaries/lists as appropriate. Utilize type hints for these structures.
 *   **Exception Handling:** Use modern exception handling with `raise ... from ...` for exception chaining.
 *   **General Style:** Follow PEP 8 guidelines.
-
-This module aims to be a modern example of Python 3.10+ code. Refrain from using outdated patterns or workarounds typical of earlier Python 3 versions.
 """
+import json
 import logging
 
+import httpx
+from pydantic import BaseModel, Field
 from typing import Any, Type, TypeVar, overload, Literal
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.rate_limiters import InMemoryRateLimiter
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
-from tenacity import retry, stop_after_attempt, wait_exponential
-from pydantic import BaseModel, Field
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # from langchain_core.output_parsers import PydanticOutputParser
 # from langchain_core.prompts import ChatPromptTemplate
@@ -31,19 +42,45 @@ from pydantic import BaseModel, Field
 from langchainer.logger import init_logger
 from langchainer.llm_initializer import init_llm
 
-# T = TypeVar('T', bound=Union[BaseModel, str])
 T = TypeVar('T', bound=BaseModel)
+
+
+class RateLimitError(Exception):
+    """Exception raised for rate limit errors."""
+    pass
+
+
+class LLMInvocationError(Exception):
+    """Exception raised for LLM invocation errors."""
+    pass
+
+
+class JSONDecodeError(json.JSONDecodeError):
+    """Exception raised for JSON decoding errors.
+
+    This redeclaration allows simpler inclusion of this exception in
+    RetryConfig's retry_exceptions without importing it from the json package.
+
+    Example:
+        retry_config = RetryConfig(
+            attempts=5, multiplier=1, min_wait=2, max_wait=10,
+            retry_exceptions=[JSONDecodeError]
+        )
+    """
+    pass
+
 
 class StringResponse(BaseModel):
     """A simple model to represent a raw string response from an LLM."""
     content: str = Field(..., description="The raw string content returned by the LLM")
+
 
 class RetryConfig(BaseModel):
     attempts: int = Field(5, ge=1)
     multiplier: float = Field(1, gt=0)
     min_wait: int = Field(2, ge=0)
     max_wait: int = Field(10, ge=0)
-
+    retry_exceptions: list[type[BaseException]] = Field(..., description="List of exception types to retry on")
 
 
 class LLMClient:
@@ -62,19 +99,28 @@ class LLMClient:
         Initialize the LLMClient.
 
         Args:
-            model: The LLM model to use.
-            temperature: The temperature for the LLM.
-            max_tokens: The maximum number of tokens for the LLM.
-            logger: The logger to use.
-            log_level: The log level.
-            rate_limiter: The rate limiter to use.
-            retry_config: The retry configuration.
-            requests_per_second: The number of requests per second.
+            model (str | BaseChatModel): The LLM model to use.
+            temperature (float | None): The temperature for the LLM. Defaults to None.
+            max_tokens (int | None): The maximum number of tokens for the LLM. Defaults to None.
+            logger (logging.Logger | None): The logger to use. Defaults to None.
+            log_level (int): The log level. Defaults to logging.INFO.
+            rate_limiter (InMemoryRateLimiter | None): The rate limiter to use. Defaults to None.
+
+            retry_config (RetryConfig | None): Configuration for retry attempts. Defaults to RetryConfig(attempts=5, multiplier=1, min_wait=2, max_wait=10).
+                Example:
+                    retry_config=RetryConfig(attempts=3, multiplier=0.5, min_wait=1, max_wait=5)
+
+                    # Effectively disables retry by making 0 attempts
+                    retry_config=RetryConfig(attempts=0)
+
+            requests_per_second (int | None): The number of requests per second. Defaults to None.
+            # Note: Providing a non-None `requests_per_second` here will eventually create an `InMemoryRateLimiter`
+            # with this setting in the `init_llm` call.
         """
         self.logger = logger or init_logger(log_level)
         self.logger.info(f"Initializing LLM with model: {model}")
 
-        self.default_retry_config = retry_config or RetryConfig(attempts=5, multiplier=1, min_wait=2, max_wait=10)
+        self.default_retry_config = retry_config or RetryConfig(attempts=5, multiplier=1, min_wait=2, max_wait=10, retry_exceptions=[])
 
         self.llm = init_llm(
             model,
@@ -89,9 +135,19 @@ class LLMClient:
         if config is None:
             config = self.default_retry_config
 
+        retry_exceptions = config.retry_exceptions + [RateLimitError]
+
+        def before_sleep(retry_state):
+            """Callback to log retry attempts."""
+            wait_time = retry_state.next_action.sleep
+            attempts_left = config.attempts - retry_state.attempt_number
+            self.logger.warning(f"Retrying in {wait_time:.2f} seconds. Attempts left: {attempts_left}")
+
         return retry(
             stop=stop_after_attempt(config.attempts),
-            wait=wait_exponential(multiplier=config.multiplier, min=config.min_wait, max=config.max_wait)
+            wait=wait_exponential(multiplier=config.multiplier, min=config.min_wait, max=config.max_wait),
+            retry=retry_if_exception_type(*retry_exceptions),
+            before_sleep=before_sleep,
         )
 
     @staticmethod
@@ -102,7 +158,18 @@ class LLMClient:
             system_values: dict[str, Any],
             apply_xml_tags: bool | Literal['auto']
     ) -> list[BaseMessage]:
-        """Helper function to prepare messages for LLM invocation."""
+        """
+        Prepare messages for LLM invocation.
+
+        Raises:
+            ValueError: If `system_message` or `system_values` is provided with `ChatPromptTemplate` or `PromptTemplate`.
+        """
+
+        if isinstance(prompt, (ChatPromptTemplate, PromptTemplate)):
+            if system_message is not None:
+                raise ValueError("system_message should not be provided when using ChatPromptTemplate or PromptTemplate")
+            if system_values:
+                raise ValueError("system_values should not be provided when using ChatPromptTemplate or PromptTemplate")
 
         if apply_xml_tags is True or (
                 apply_xml_tags == "auto"
@@ -125,13 +192,27 @@ class LLMClient:
         return messages
 
     async def _invoke_llm(self, messages: list[BaseMessage], output_schema: Type[T] | Type[str]) -> T | str:
-        """Helper function to invoke the LLM with prepared messages."""
+        """
+        Invoke the LLM with prepared messages and parse the response.
+
+        Args:
+            messages: List of messages to send to the LLM.
+            output_schema: Schema to parse the response into.
+
+        Returns:
+            Parsed response according to the output schema.
+
+        Raises:
+            RateLimitError: If the rate limit is exceeded.
+            JSONDecodeError: If the response cannot be parsed as JSON.
+            LLMInvocationError: If the LLM invocation fails.
+        """
         try:
             if output_schema is not str:
                 model_with_structure = self.llm.with_structured_output(output_schema)
                 response = await model_with_structure.ainvoke(messages)
 
-                # TODO: [Maybe] consider to use raw LLM response, ??just to have a token_usage??
+                # TODO: [Maybe] consider to use raw LLM response, ?just to have a token_usage?
                 # # Invoke the LLM without structured output first
                 # raw_response = await self.llm.ainvoke(messages)
                 # token_usage = raw_response.get('usage', 'N/A')
@@ -156,7 +237,7 @@ class LLMClient:
             else:
                 response = await self.llm.ainvoke(messages)
 
-                # self.logger.debug(f"RAW LLM response: {response}", extra={'log_event': 'token_usage'})
+                # self.logger.debug(f"RAW LLM response: {response}", extra={'log_event': 'raw'})
                 if self.logger.isEnabledFor(logging.DEBUG):
                     self.logger.debug(response, extra={'log_event': 'response'})
 
@@ -165,26 +246,70 @@ class LLMClient:
                 elif isinstance(response, BaseModel) and hasattr(response, 'content'):
                     response = response.content
 
-
             return response
 
-        except Exception as e:
-            if "429" in str(e):
-                # TODO: { Add an option | consider changes } to retry only on rate limit errors `if isinstance(e, ??RateLimitError??):`
-                #  (and possibly some parsing errors - sometimes retries return properly formatted responses)
-                #  - as it currently retries on any exception even if we receive a correct response.
-                #  Collect and list raised exceptions here (for future consideration):
-                #  - ...
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
                 self.logger.warning("Rate limit exceeded. Retrying...")
-                raise
-            self.logger.error(f"Error in LLMClient.run: {str(e)}")
-            raise
-
+                # Initiate a retry
+                raise RateLimitError("Rate limit exceeded") from e
+            else:
+                self.logger.error(f"HTTP error in LLMClient.run: {e.response.status_code}", exc_info=True)
+                raise LLMInvocationError("HTTP error during LLM invocation") from e
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Error in parsing JSON response from LLM; for input: {messages}", exc_info=True)
+            raise JSONDecodeError("Error in parsing JSON response from LLM", doc=e.doc, pos=e.pos) from e
+        except Exception as e:
+            self.logger.error(f"Unexpected error in LLMClient.run: {str(e)}", exc_info=True)
+            raise LLMInvocationError("Unexpected error during LLM invocation") from e
 
     """
-        These overloads are needed to support the following use cases:
-            1. The user does not specify an output schema, so the output will be considered as a str.
-            2. The user specifies an output schema, so the output will be structured according to the schema.
+        These 3 overloads enforce the following rules:
+        - ChatPromptTemplate: system_message and system_values MUST NOT be provided.
+        - PromptTemplate: system_message and system_values MUST NOT be provided.
+        - str: system_message and system_values CAN be provided.
+    """
+
+    @overload
+    async def arun(
+            self,
+            prompt: ChatPromptTemplate,
+            values: dict[str, Any] = None,
+            output_schema: Type[T] | Type[str] = str,
+            apply_xml_tags: bool | Literal['auto'] = False,
+            retry_config: RetryConfig | None = None,
+    ) -> T | str:
+        ...
+
+    @overload
+    async def arun(
+            self,
+            prompt: PromptTemplate,
+            values: dict[str, Any] = None,
+            output_schema: Type[T] | Type[str] = str,
+            apply_xml_tags: bool | Literal['auto'] = False,
+            retry_config: RetryConfig | None = None,
+    ) -> T | str:
+        ...
+
+    @overload
+    async def arun(
+            self,
+            prompt: str,
+            values: dict[str, Any] = None,
+            output_schema: Type[T] | Type[str] = str,
+            system_message: str | None = None,
+            system_values: dict[str, Any] = None,
+            apply_xml_tags: bool | Literal['auto'] = False,
+            retry_config: RetryConfig | None = None,
+    ) -> T | str:
+        ...
+
+    """
+        These 2 overloads handle the output schema for the LLM response:
+
+        1. No schema specified: The output is treated as a string.
+        2. Schema provided: The output is parsed according to the schema.
 
         Examples:
             1. Basic usage with a string output schema:
@@ -193,7 +318,7 @@ class LLMClient:
                 >>> print(response)
                 42
 
-            2. Basic usage with a structured output schema:
+            2. Basic usage with a schema:
                 >>> from pydantic import BaseModel
                 >>> class Entity(BaseModel):
                 ...     name: str
@@ -206,36 +331,97 @@ class LLMClient:
             3. Basic usage with values and output_schema:
                 >>> response = await client.arun("What is the meaning of {term}?", {'term': 'life'}, Entity)
     """
+
     @overload
     async def arun(self,
-                  prompt: str,
-                  values: dict[str, Any],
-                  output_schema: Type[T],
-                  system_message: str = None,
-                  system_values: dict[str, Any] = None
-              ) -> T:
+                   prompt: str,
+                   values: dict[str, Any],
+                   output_schema: Type[T],
+                   system_message: str = None,
+                   system_values: dict[str, Any] = None
+                   ) -> T:
         ...
 
     @overload
     async def arun(self,
-                  prompt: str,
-                  values: dict[str, Any] = None,
-                  output_schema: Type[str] = str,
-                  system_message: str = None,
-                  system_values: dict[str, Any] = None
-              ) -> str:
+                   prompt: str,
+                   values: dict[str, Any] = None,
+                   output_schema: Type[str] = str,
+                   system_message: str = None,
+                   system_values: dict[str, Any] = None
+                   ) -> str:
         ...
 
     async def arun(self,
-                  prompt: str | ChatPromptTemplate | PromptTemplate,
-                  values: dict[str, Any] | None = None,
-                  output_schema: Type[T] | Type[str] = str,
-                  system_message: str | None = None,
-                  system_values: dict[str, Any] | None = None,
-                  apply_xml_tags: bool | Literal['auto'] = False,
-                  retry_config: RetryConfig | None = None,
-              ) -> T | str:
-        """Invokes the LLM and parses the response, ensuring structured output."""
+                   prompt: str | ChatPromptTemplate | PromptTemplate,
+                   values: dict[str, Any] | None = None,
+                   output_schema: Type[T] | Type[str] = str,
+                   system_message: str | None = None,
+                   system_values: dict[str, Any] | None = None,
+                   apply_xml_tags: bool | Literal['auto'] = False,
+                   retry_config: RetryConfig | None = None,
+                   ) -> T | str:
+        """
+        Asynchronously invoke the LLM with a prompt and parse the response.
+
+        Args:
+            prompt: The prompt to send to the LLM. Can be a string, ChatPromptTemplate, or PromptTemplate.
+            values: Dictionary of values to format the prompt. Defaults to None.
+            output_schema: Schema to parse the response into. Defaults to `str` for unstructured responses.
+            system_message: Optional system message to include. Must not be provided if `prompt` is a
+                           ChatPromptTemplate or PromptTemplate. Defaults to None.
+            system_values: Optional dictionary of values to format the system message. Must not be provided
+                          if `prompt` is a ChatPromptTemplate or PromptTemplate. Defaults to None.
+            apply_xml_tags: Whether to apply XML tags to the prompt and values. Can be `True`, `False`, or
+                           `'auto'` (experimental). Defaults to False.
+            retry_config: Configuration for retry attempts. Defaults to the client's default retry config.
+
+        Returns:
+            Parsed response according to the `output_schema`. If `output_schema` is `str`, returns the raw
+            string response.
+
+        Raises:
+            ValueError: If `system_message` or `system_values` is provided with `ChatPromptTemplate` or
+                       `PromptTemplate`.
+            RateLimitError: If the rate limit is exceeded.
+            JSONDecodeError: If the response cannot be parsed as JSON.
+            LLMInvocationError: If the LLM invocation fails.
+
+        Examples (illustrative):
+            Basic usage with a string prompt:
+            response = client.run("What is the capital of France?")
+            print(response) # Paris
+
+            Usage with a `ChatPromptTemplate` and values:
+            import asyncio
+            from langchain_core.prompts import ChatPromptTemplate
+            async def test():
+            ...     template = ChatPromptTemplate.from_template("Tell me a joke about {topic}")
+            ...     response = await client.arun(template, {"topic": "programming"})
+            ...     print(response) # Or assert something about the response
+            asyncio.run(test())
+
+            Usage with a structured output schema:
+            from pydantic import BaseModel
+            class Joke(BaseModel):
+            ...     setup: str
+            ...     punchline: str
+            response = client.run("Tell me a joke", output_schema=Joke)
+            print(response.setup)
+            print(response.punchline)
+
+            Usage with a system message and XML tags:
+            response = client.run(
+            ...     "Translate '{text}' to {language}",
+            ...     {"text": "Hello, world!", "language": "Spanish"},
+            ...     system_message="You are a helpful translation assistant.",
+            ...     apply_xml_tags=True
+            ... )
+
+            Usage with a custom retry configuration:
+            _retry_config = RetryConfig(attempts=3, min_wait=1, max_wait=3, retry_exceptions=[])
+            response = client.run("What is the meaning of life?", retry_config=_retry_config)
+        """
 
         values = values or {}
         system_values = system_values or {}
@@ -244,7 +430,7 @@ class LLMClient:
 
         @_retry_decorator
         async def _arun_with_retry():
-
+            """ Internal retry wrapper for arun """
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     {'system_message': system_message, 'prompt': prompt},
@@ -267,10 +453,26 @@ class LLMClient:
 
         return await _arun_with_retry()
 
-    def run(self, *args, **kwargs) -> T | str:
+    def run(self,
+            prompt: str | ChatPromptTemplate | PromptTemplate,
+            values: dict[str, Any] | None = None,
+            output_schema: Type[T] | Type[str] = str,
+            system_message: str | None = None,
+            system_values: dict[str, Any] | None = None,
+            apply_xml_tags: bool | Literal['auto'] = False,
+            retry_config: RetryConfig | None = None
+            ) -> T | str:
         """Synchronous wrapper for arun."""
         import asyncio
-        return asyncio.run(self.arun(*args, **kwargs))
+        return asyncio.run(self.arun(
+            prompt=prompt,
+            values=values,
+            output_schema=output_schema,
+            system_message=system_message,
+            system_values=system_values,
+            apply_xml_tags=apply_xml_tags,
+            retry_config=retry_config
+        ))
 
     # def invoke(self, *args, **kwargs) -> T | str:
     #     """Synchronous wrapper for arun, kept for backward compatibility."""
@@ -280,18 +482,20 @@ class LLMClient:
     #     """Asynchronous method for arun, kept for backward compatibility."""
     #     return await self.arun(*args, **kwargs)
 
+
 def _should_apply_xml_tags(prompt, values, system_message, system_values):
-    """Determine whether to apply XML tags based on the prompt and content of the values."""
-    # !!! Experimental (uses quite dummy conditions) and may not work as expected !!!
-    # TODO: depends on the length of the values and system_values, decide whether to apply XML tags or not.
-    #   Condition (to consider) to apply XML tags:
-    #   - A value has a length greater than 100 characters.
-    #   - The prompt has a length greater than 100 characters.
-    #   - A value has multiple lines.
-    #   Condition to disable XML tags:
-    #   - Prompt + value has a length less than 100 characters.
-    length_of_prompt_and_values = len(prompt) + sum(len(v) for v in values.values()) + len(system_message) + sum(len(v) for v in system_values.values())
-    if length_of_prompt_and_values < 100:
+    """
+    Determine whether to apply XML tags based on the prompt and content of the values.
+
+    !!! Experimental (uses quite dummy conditions) and may not work as expected !!!
+    """
+    # TODO: Improve this function to be more accurate and robust
+    max_length_threshold = 100
+
+    length_of_prompt_and_values = len(prompt) + sum(len(v) for v in values.values()) + len(system_message) + sum(
+        len(v) for v in system_values.values())
+    if length_of_prompt_and_values < max_length_threshold:
         return False
+
     has_multiple_lines = any(isinstance(v, str) and "\n" in v for v in values.values() + system_values.values())
     return has_multiple_lines

@@ -12,6 +12,8 @@ pydantic = "^2.10.4"
 langchain = "^0.3.13"
 langchain-mistralai = "^0.2.4"
 rich = "^13.9.4"
+langchain-core = "^0.3.28"
+pygments = "^2.18.0"
 
 [project.optional-dependencies]
 rich = ["rich"]

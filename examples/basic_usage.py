@@ -1,18 +1,12 @@
 import asyncio
-import json
 import logging
-import argparse
-import os
 
-from langchainer import LLMClient, init_logger
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Enable RICH_LOGGING_ENABLED environment variable to enable rich logging
-os.environ["RICH_LOGGING_ENABLED"] = "true"
-
+from langchainer import LLMClient, init_logger
 
 async def main():
 
