@@ -10,6 +10,7 @@ Example:
     response = client.run("What is the meaning of life?")
     print(response)
 """
+import asyncio
 
 """
 Contributors guidelines:
@@ -19,6 +20,18 @@ Contributors guidelines:
 *   **Data Structures:** Prefer data classes (PEP 557), `typing.NamedTuple`, or standard dictionaries/lists as appropriate. Utilize type hints for these structures.
 *   **Exception Handling:** Use modern exception handling with `raise ... from ...` for exception chaining; `raise... from None` when applicable.
 *   **General Style:** Follow PEP 8 guidelines.
+"""
+
+"""
+    TODO: Investigate why we need to import langchainer only after load_dotenv()
+        Otherwise, env vars are not available.
+    
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    from langchainer import LLMClient
+
+
 """
 import json
 import httpx
@@ -46,9 +59,8 @@ T = TypeVar('T', bound=BaseModel)
 
 
 class RateLimitError(Exception):
-    """Exception raised for rate limit errors. Used in RetryConfig by default as one of the retry_exceptions."""
+    """Exception raised for rate limit errors."""
     pass
-
 
 class LLMInvocationError(Exception):
     """Exception raised for LLM invocation errors."""
@@ -68,7 +80,7 @@ class JSONDecodeError(json.JSONDecodeError):
     Example:
         retry_config = RetryConfig(
             attempts=5, multiplier=1, min_wait=2, max_wait=10,
-            retry_exceptions=[JSONDecodeError]
+            retry_exceptions=[RateLimitError, JSONDecodeError]
         )
     """
     pass
@@ -130,7 +142,10 @@ class LLMClient:
         self.logger = logger or init_logger(log_level)
         self.logger.info(f"Initializing LLM with model: {model}")
 
-        self.default_retry_config = retry_config or RetryConfig(attempts=5, multiplier=1, min_wait=2, max_wait=10, retry_exceptions=[])
+        self.default_retry_config = retry_config or RetryConfig(
+            attempts=5, multiplier=1, min_wait=2, max_wait=10,
+            retry_exceptions=[RateLimitError]
+        )
 
         self.llm = init_llm(
             model,
@@ -140,12 +155,14 @@ class LLMClient:
             requests_per_second=requests_per_second
         )
 
+        # Create an event loop specifically for the synchronous `run` method.
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
     def _create_retry_decorator(self, config: RetryConfig = None):
         """Create a retry decorator based on the provided configuration."""
         if config is None:
             config = self.default_retry_config
-
-        retry_exceptions = config.retry_exceptions + [RateLimitError]
 
         def before_sleep(retry_state):
             """Callback to log retry attempts."""
@@ -156,7 +173,7 @@ class LLMClient:
         return retry(
             stop=stop_after_attempt(config.attempts),
             wait=wait_exponential(multiplier=config.multiplier, min=config.min_wait, max=config.max_wait),
-            retry=retry_if_exception_type(*retry_exceptions),
+            retry=retry_if_exception_type(*config.retry_exceptions),
             before_sleep=before_sleep,
         )
 
@@ -169,7 +186,7 @@ class LLMClient:
             apply_xml_tags: bool | Literal['auto']
     ) -> list[BaseMessage]:
         """
-        Prepare messages for LLM invocation.
+        Prepare messages for LLM invocation, handling BaseModel serialization.
 
         Raises:
             ValueError: If `system_message` or `system_values` is provided with `ChatPromptTemplate` or `PromptTemplate`.
@@ -180,6 +197,10 @@ class LLMClient:
                 raise ValueError("system_message should not be provided when using ChatPromptTemplate or PromptTemplate")
             if system_values:
                 raise ValueError("system_values should not be provided when using ChatPromptTemplate or PromptTemplate")
+
+        # Serialize BaseModel instances in values
+        values = LLMClient._serialize_values(values)
+        system_values = LLMClient._serialize_values(system_values)
 
         if apply_xml_tags is True or (
                 apply_xml_tags == "auto"
@@ -201,6 +222,28 @@ class LLMClient:
             messages.append(HumanMessage(content=prompt.format(**values)))
         return messages
 
+    @staticmethod
+    def _serialize_values(values: dict[str, Any]) -> dict[str, Any]:
+        """
+        Serializes BaseModel objects within the template arguments recursively.
+        """
+        serialized_args = {}
+        for key, value in values.items():
+            if isinstance(value, BaseModel):
+                # Default to model_dump() for LLM input
+                serialized_args[key] = value.model_dump()
+            elif isinstance(value, dict):
+                # Recursively serialize nested dictionaries
+                serialized_args[key] = LLMClient._serialize_values(value)
+            elif isinstance(value, list):
+                # Handle lists of BaseModel objects or other serializable types
+                serialized_args[key] = [
+                    item.model_dump() if isinstance(item, BaseModel) else item for item in value
+                ]
+            else:
+                serialized_args[key] = value
+        return serialized_args
+
     async def _invoke_llm(self, messages: list[BaseMessage], output_schema: Type[T] | Type[str]) -> T | str:
         """
         Invoke the LLM with prepared messages and parse the response.
@@ -219,16 +262,9 @@ class LLMClient:
         """
         try:
             if output_schema is not str:
+
                 model_with_structure = self.llm.with_structured_output(output_schema)
                 response = await model_with_structure.ainvoke(messages)
-
-                # TODO: Consider using the raw LLM response (just!) to obtain `token_usage`?
-                # # Invoke the LLM without structured output first
-                # raw_response = await self.llm.ainvoke(messages)
-                # token_usage = raw_response.get('usage', 'N/A')
-                # parsed_response = output_schema.parse_raw(raw_response['content'])
-
-                token_usage = 'N/A'
 
                 # self.logger.debug(f"RAW LLM response: {response}", extra={'log_event': 'raw'})
 
@@ -256,12 +292,12 @@ class LLMClient:
                 elif isinstance(response, BaseModel) and hasattr(response, 'content'):
                     response = response.content
 
+            self.logger.debug(f"_invoke_llm: Returning response")
             return response
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
                 self.logger.warning("Rate limit exceeded. Retrying...")
-                # Initiate a retry
                 raise RateLimitError("Rate limit exceeded") from e
             else:
                 self.logger.error(f"HTTP error in LLMClient.run: {e.response.status_code}", exc_info=True)
@@ -271,6 +307,8 @@ class LLMClient:
             raise JSONDecodeError("Error in parsing JSON response from LLM", doc=e.doc, pos=e.pos) from e
         except Exception as e:
             self.logger.error(f"Unexpected error in LLMClient.run: {str(e)}", exc_info=True)
+            self.logger.error(f"Messages at the time of error: {messages}")
+            self.logger.error(f"Output schema at the time of error: {output_schema}")
             raise LLMInvocationError("Unexpected error during LLM invocation") from e
 
     """
@@ -279,7 +317,6 @@ class LLMClient:
         - PromptTemplate: system_message and system_values MUST NOT be provided.
         - str: system_message and system_values CAN be provided.
     """
-
     @overload
     async def arun(
             self,
@@ -314,7 +351,6 @@ class LLMClient:
             retry_config: RetryConfig | None = None,
     ) -> T | str:
         ...
-
     """
         These 2 overloads handle the output schema for the LLM response:
 
@@ -341,7 +377,6 @@ class LLMClient:
             3. Basic usage with values and output_schema:
                 >>> response = await client.arun("What is the meaning of {term}?", {'term': 'life'}, Entity)
     """
-
     @overload
     async def arun(self,
                    prompt: str,
@@ -429,7 +464,7 @@ class LLMClient:
             ... )
 
             Usage with a custom retry configuration:
-            _retry_config = RetryConfig(attempts=3, min_wait=1, max_wait=3, retry_exceptions=[])
+            _retry_config = RetryConfig(attempts=3, min_wait=1, max_wait=3, retry_exceptions=[RateLimitError])
             response = client.run("What is the meaning of life?", retry_config=_retry_config)
         """
 
@@ -477,16 +512,25 @@ class LLMClient:
 
         Note: Usage examples can be found in the `arun` method docstring.
         """
-        import asyncio
-        return asyncio.run(self.arun(
-            prompt=prompt,
-            values=values,
-            output_schema=output_schema,
-            system_message=system_message,
-            system_values=system_values,
-            apply_xml_tags=apply_xml_tags,
-            retry_config=retry_config
-        ))
+        try:
+            result = self._loop.run_until_complete(self.arun(
+                prompt=prompt,
+                values=values,
+                output_schema=output_schema,
+                system_message=system_message,
+                system_values=system_values,
+                apply_xml_tags=apply_xml_tags,
+                retry_config=retry_config
+            ))
+            return result
+        except Exception as e:
+            self.logger.error(f"Error in run: {e}", exc_info=True)
+            raise
+
+    # def _handle_exception(self, e):
+    #     if not isinstance(e, (RateLimitError)):
+    #         self.logger.error(f"An error occurred: {e}", exc_info=True)
+    #         raise
 
     # def invoke(self, *args, **kwargs) -> T | str:
     #     """Synchronous wrapper for arun, kept for backward compatibility."""
@@ -495,6 +539,15 @@ class LLMClient:
     # async def ainvoke(self, *args, **kwargs) -> T | str:
     #     """Asynchronous method for arun, kept for backward compatibility."""
     #     return await self.arun(*args, **kwargs)
+
+    def close(self):
+        """Closes the event loop."""
+        if self._loop:
+            self._loop.close()
+
+    def __del__(self):
+        self.close()
+
 
 
 def _should_apply_xml_tags(prompt, values, system_message, system_values):

@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, field_validator
 
 class Task(BaseModel):
     """A task with a unique id, a description, and a list of subtask ids."""
-    id: int = Field(default=0, description="Unique id of the task")
+    id: int = Field(..., description="Unique id of the task")
     task: str = Field(..., description="The task in text form.")
     subtasks: list[int] = Field(..., description="IDs of subtasks that must be completed before the main task.")
 

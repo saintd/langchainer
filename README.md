@@ -3,6 +3,8 @@
 [![PyPI version](https://badge.fury.io/py/langchainer.svg)](https://badge.fury.io/py/langchainer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+Draft: Incredible simplicity for LLM interaction and enhanced debugging, especially with structured output.
+
 LangChainer is a lightweight Python library that streamlines your interactions with Large Language Models (LLMs) by bringing together the best of **LangChain**, **LiteLLM**, **Instructor**, and **Rich** into a single, easy-to-use package. It provides a unified interface for working with various LLM providers, simplifies structured output handling, and enhances debugging with beautiful, informative logging.
 
 **Key Features:**
