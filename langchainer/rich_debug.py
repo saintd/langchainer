@@ -137,6 +137,7 @@ def debug_rich_handler(record: logging.LogRecord, console: Console) -> bool:
                 f" + {token_usage.get('completion_tokens', 'N/A')}"
                 f" = [bold]{token_usage.get('total_tokens', 'N/A')}[/bold]")
 
+
     #
     #   Prompt template
     #

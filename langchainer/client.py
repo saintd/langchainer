@@ -17,13 +17,13 @@ Contributors guidelines:
 *   **Python Version:** Requires Python 3.10 or later. Avoid patterns common in Python 3.6-3.9.
 *   **Type Hinting:** Uses modern type hinting syntax, including PEP 604 (Union Types - `X | Y`), PEP 585 (Type Hinting Generics In Standard Collections), PEP 673 (Self Type), and others. Use type hints extensively.
 *   **Data Structures:** Prefer data classes (PEP 557), `typing.NamedTuple`, or standard dictionaries/lists as appropriate. Utilize type hints for these structures.
-*   **Exception Handling:** Use modern exception handling with `raise ... from ...` for exception chaining.
+*   **Exception Handling:** Use modern exception handling with `raise ... from ...` for exception chaining; `raise... from None` when applicable.
 *   **General Style:** Follow PEP 8 guidelines.
 """
 import json
+import httpx
 import logging
 
-import httpx
 from pydantic import BaseModel, Field
 from typing import Any, Type, TypeVar, overload, Literal
 
@@ -46,7 +46,7 @@ T = TypeVar('T', bound=BaseModel)
 
 
 class RateLimitError(Exception):
-    """Exception raised for rate limit errors."""
+    """Exception raised for rate limit errors. Used in RetryConfig by default as one of the retry_exceptions."""
     pass
 
 
@@ -56,10 +56,14 @@ class LLMInvocationError(Exception):
 
 
 class JSONDecodeError(json.JSONDecodeError):
-    """Exception raised for JSON decoding errors.
+    """
+    Exception raised for JSON decoding errors.
 
     This redeclaration allows simpler inclusion of this exception in
     RetryConfig's retry_exceptions without importing it from the json package.
+
+    Note: The LLM may initially return invalid JSON, but retries can yield valid JSON.
+        Using this exception in RetryConfig's retry_exceptions allows for such retries.
 
     Example:
         retry_config = RetryConfig(
@@ -76,12 +80,17 @@ class StringResponse(BaseModel):
 
 
 class RetryConfig(BaseModel):
+    """
+    Configuration for retry attempts.
+
+    Defaults to 5 attempts, multiplier of 1, min wait of 2 seconds, and max wait of 10 seconds.
+    Retry exceptions defaults to [RateLimitError].
+    """
     attempts: int = Field(5, ge=1)
     multiplier: float = Field(1, gt=0)
     min_wait: int = Field(2, ge=0)
     max_wait: int = Field(10, ge=0)
     retry_exceptions: list[type[BaseException]] = Field(..., description="List of exception types to retry on")
-
 
 class LLMClient:
     """Interface for LLM interactions"""
@@ -102,7 +111,8 @@ class LLMClient:
             model (str | BaseChatModel): The LLM model to use.
             temperature (float | None): The temperature for the LLM. Defaults to None.
             max_tokens (int | None): The maximum number of tokens for the LLM. Defaults to None.
-            logger (logging.Logger | None): The logger to use. Defaults to None.
+            logger (logging.Logger | None): The logger to use. When None, a default logger will be created.
+                Defaults to None.
             log_level (int): The log level. Defaults to logging.INFO.
             rate_limiter (InMemoryRateLimiter | None): The rate limiter to use. Defaults to None.
 
@@ -212,7 +222,7 @@ class LLMClient:
                 model_with_structure = self.llm.with_structured_output(output_schema)
                 response = await model_with_structure.ainvoke(messages)
 
-                # TODO: [Maybe] consider to use raw LLM response, ?just to have a token_usage?
+                # TODO: Consider using the raw LLM response (just!) to obtain `token_usage`?
                 # # Invoke the LLM without structured output first
                 # raw_response = await self.llm.ainvoke(messages)
                 # token_usage = raw_response.get('usage', 'N/A')
@@ -462,7 +472,11 @@ class LLMClient:
             apply_xml_tags: bool | Literal['auto'] = False,
             retry_config: RetryConfig | None = None
             ) -> T | str:
-        """Synchronous wrapper for arun."""
+        """
+        Synchronous wrapper for `arun`.
+
+        Note: Usage examples can be found in the `arun` method docstring.
+        """
         import asyncio
         return asyncio.run(self.arun(
             prompt=prompt,

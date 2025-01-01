@@ -1,26 +1,54 @@
+[project]
+name = "langchainer"
+version = "0.0.1"
+description = "Best of 4 worlds [LangChain, LiteLLM, Instructor, Rich] in 1 helper + 1 client with easy debugging."
+authors = ["Pavel Mironov"]
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["llm", "langchain", "litellm", "instructor", "rich", "ai", "machine-learning", "debugging", "openai", "mistral", "together", "anthropic", "openrouter", "google_genai"]
+license = {file = "LICENSE"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent"
+]
+
+dependencies = [
+    "pydantic >=2.10.4",
+    "langchain >=0.3.13",
+    "langchain-core >=0.3.28",
+]
+
+
 [tool.poetry]
 name = "langchainer"
-version = "0.1.0"
-description = ""
-authors = ["Pavel <66and55@gmail.com>"]
+version = "0.0.1"
+description = "Best of 4 worlds [LangChain, LiteLLM, Instructor, Rich] in 1 helper + 1 client with easy debugging."
+authors = ["Pavel Mironov <66and55@gmail.com>"]
 readme = "README.md"
-packages = [{include = "langchainer"}]
+packages = [{ include = "langchainer" }]
 
 [tool.poetry.dependencies]
 python = "^3.13"
-pydantic = "^2.10.4"
-langchain = "^0.3.13"
-langchain-mistralai = "^0.2.4"
-rich = "^13.9.4"
-langchain-core = "^0.3.28"
-pygments = "^2.18.0"
 
 [project.optional-dependencies]
-rich = ["rich"]
-mistral = ["langchain-mistralai"]
-openai = ["langchain-openai"]
-anthropic = ["langchain-anthropic"]
+rich = ["rich >=13.9.4", "pygments >=2.18.0"]
+mistral = ["langchain-mistralai >=0.2.4"]
 google_genai = ["langchain-google-genai"]
+openrouter = ["langchain-openrouter"]
+anthropic = ["langchain-anthropic"]
+together = ["langchain-together"]
+openai = ["langchain-openai"]
+
+[project.urls]
+"Homepage" = "https://github.com/saintd/langchainer"
+"Bug Tracker" = "https://github.com/saintd/langchainer/issues"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.4"
