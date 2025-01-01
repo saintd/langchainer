@@ -265,7 +265,6 @@ class LLMClient:
 
                 model_with_structure = self.llm.with_structured_output(output_schema)
                 response = await model_with_structure.ainvoke(messages)
-
                 # self.logger.debug(f"RAW LLM response: {response}", extra={'log_event': 'raw'})
 
                 if self.logger.isEnabledFor(logging.DEBUG):
@@ -282,8 +281,8 @@ class LLMClient:
                         self.logger.debug(response, extra={'log_event': 'unstructured_response'})
             else:
                 response = await self.llm.ainvoke(messages)
-
                 # self.logger.debug(f"RAW LLM response: {response}", extra={'log_event': 'raw'})
+
                 if self.logger.isEnabledFor(logging.DEBUG):
                     self.logger.debug(response, extra={'log_event': 'response'})
 
@@ -292,7 +291,6 @@ class LLMClient:
                 elif isinstance(response, BaseModel) and hasattr(response, 'content'):
                     response = response.content
 
-            self.logger.debug(f"_invoke_llm: Returning response")
             return response
 
         except httpx.HTTPStatusError as e:

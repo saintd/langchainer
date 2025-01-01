@@ -9,7 +9,8 @@ from langchain_core.runnables.utils import Input, Output
 from langchain.chat_models import init_chat_model
 from langchain.chat_models.base import BaseChatModel
 
-# # We don't need _ConfigurableModel since we always specify `model`.
+# # We used to need _ConfigurableModel to have its type hint in the return of the function
+# # but now, since we always use `model` as not None, we don't need it.
 # from langchain_core.language_models.base import LanguageModelInput
 # # Define _ConfigurableModel as a workaround for importing a private class
 # _ConfigurableModel = Runnable[LanguageModelInput, Any]
@@ -29,29 +30,47 @@ class LLMProviderNotInstalledError(LangChainException):
 class InitKwargs(TypedDict, total=False):
     temperature: float
     max_tokens: int
+    api_key: str
     rate_limiter: Optional[InMemoryRateLimiter]
 
 
 def init_llm(
         model: str,
         *,
-        temperature: Optional[float] = 0,
-        max_tokens: Optional[int] = None,
-        requests_per_second: Optional[float] = None,
-        rate_limiter: Optional[InMemoryRateLimiter] = None,
-        retry_exception_types: Optional[tuple[type[BaseException], ...]] = None,
-        wait_exponential_jitter: Optional[bool] = None,
-        stop_after_attempt: Optional[int] = None,
-        return_runnable: Optional[bool] = None,
+        temperature: float | None = 0,
+        max_tokens: int | None = None,
+        api_key: str | None = None,
+        requests_per_second: float | None = None,
+        rate_limiter: InMemoryRateLimiter | None = None,
+        retry_exception_types: tuple[type[BaseException], ...] | None = None,
+        wait_exponential_jitter: bool | None = None,
+        stop_after_attempt: int | None = None,
+        return_runnable: bool | None = None,
     ) -> BaseChatModel | Runnable[Input, Output]:
     """
     Initializes a language model using LangChain's `init_chat_model` and
     optionally wraps it with retry logic.
 
+    This function is a wrapper around LangChain's `init_chat_model`, providing additional
+    functionality such as rate limiting, and retry logic.
+
     Args:
-        model: The provider/model string (e.g., "openai/gpt-3.5-turbo").
+        model: The model identifier string. This can be:
+               1. A full provider/model string (e.g., "openai/gpt-3.5-turbo", "mistralai/mistral-small-latest")
+               2. Just the model name (e.g., "gpt-3.5-turbo", "mistral-small-latest")
+               If only the model name is provided, the function will attempt to
+               infer the provider automatically based on the model prefix.
+               Supported prefixes for auto-inference include:
+               - 'gpt-3...', 'gpt-4...', 'o1...' -> 'openai'
+               - 'claude...' -> 'anthropic'
+               - 'amazon....' -> 'bedrock'
+               - 'gemini...' -> 'google_vertexai'
+               - 'command...' -> 'cohere'
+               - 'accounts/fireworks...' -> 'fireworks'
+               - 'mistral...' -> 'mistralai'
         temperature: The temperature to use for sampling.
         max_tokens: The maximum number of tokens to generate.
+        api_key: An optional API key for the model.
         requests_per_second: The maximum number of requests per second to allow.
                               If provided, a rate limiter will be created.
                               Note: It is recommended to provide either
@@ -74,12 +93,38 @@ def init_llm(
         MissingModelNameError: If the `model` argument is empty or not provided.
         LLMInitializationError: If there is an error initializing the model.
         LLMProviderNotInstalledError: If the required provider package is not installed.
+
+    Note:
+        This function uses LangChain's `init_chat_model` internally. The following
+        model providers are supported, and the corresponding integration package
+        must be installed:
+
+        - 'openai' -> langchain-openai
+        - 'anthropic' -> langchain-anthropic
+        - 'azure_openai' -> langchain-openai
+        - 'google_vertexai' -> langchain-google-vertexai
+        - 'google_genai' -> langchain-google-genai
+        - 'bedrock' -> langchain-aws
+        - 'bedrock_converse' -> langchain-aws
+        - 'cohere' -> langchain-cohere
+        - 'fireworks' -> langchain-fireworks
+        - 'together' -> langchain-together
+        - 'mistralai' -> langchain-mistralai
+        - 'huggingface' -> langchain-huggingface
+        - 'groq' -> langchain-groq
+        - 'ollama' -> langchain-ollama
+
+        The function will attempt to infer the model provider if not explicitly specified.
     """
     if not model:
         raise MissingModelNameError("Model path cannot be empty")
 
-    provider, *model_parts = model.split("/")
-    model_name = model if not model_parts else "/".join(model_parts)
+    # Split the model string, but don't assume a provider is always specified
+    parts = model.split("/")
+    if len(parts) > 1:
+        provider, model_name = parts[0], "/".join(parts[1:])
+    else:
+        provider, model_name = None, model
 
     # Handle special cases or aliases (like "mistral" to "mistralai")
     if provider == "mistral":
@@ -90,6 +135,8 @@ def init_llm(
         init_kwargs["temperature"] = temperature
     if max_tokens is not None:
         init_kwargs["max_tokens"] = max_tokens
+    if api_key is not None:
+        init_kwargs["api_key"] = api_key
 
 
     if requests_per_second is not None and rate_limiter is not None:
