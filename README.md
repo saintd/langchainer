@@ -62,31 +62,34 @@ from langchainer import LLMClient
 client = LLMClient("mistral/mistral-small-latest")  # Or "openai/gpt-3.5-turbo", etc.
 
 # --- Example 1: Simple String Prompt ---
-response = client.run("What is the meaning of life?")
+response = client.run_sync("What is the meaning of life?")
 print(response)
 
 # --- Example 2: Using a ChatPromptTemplate ---
 template = ChatPromptTemplate.from_template("Tell me a joke about {topic}")
-response = client.run(template, {"topic": "programming"})
+response = client.run_sync(template, {"topic": "programming"})
 print(response)
+
 
 # --- Example 3: Structured Output ---
 class Joke(BaseModel):
     setup: str
     punchline: str
 
-response = client.run("Tell me a joke about technology", output_schema=Joke)
+
+response = client.run_sync("Tell me a joke about technology", output_schema=Joke)
 print(response.setup)
 print(response.punchline)
 
 # --- Example 4: Async usage with structured output and XML tags ---
 import asyncio
 
+
 async def main():
     class Fact(BaseModel):
         fact: str
 
-    response = await client.arun(
+    response = await client.run(
         "Tell me a fact about {subject}",
         {"subject": "the ocean"},
         output_schema=Fact,
@@ -94,6 +97,7 @@ async def main():
         apply_xml_tags=True
     )
     print(response)
+
 
 asyncio.run(main())
 ```

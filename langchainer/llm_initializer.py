@@ -1,4 +1,4 @@
-
+import logging
 from typing import Optional, TypedDict
 
 from langchain_core.exceptions import LangChainException
@@ -9,11 +9,12 @@ from langchain_core.runnables.utils import Input, Output
 from langchain.chat_models import init_chat_model
 from langchain.chat_models.base import BaseChatModel
 
-# # We used to need _ConfigurableModel to have its type hint in the return of the function
-# # but now, since we always use `model` as not None, we don't need it.
+# `_ConfigurableModel` was previously used to match `init_chat_model`'s return type.
+# With a non-None `model` and internal retry handling, the return is now
+# `BaseChatModel | Runnable[Input, Output]`, making it unnecessary.
+# Lines below are kept for reference.
 # from langchain_core.language_models.base import LanguageModelInput
-# # Define _ConfigurableModel as a workaround for importing a private class
-# _ConfigurableModel = Runnable[LanguageModelInput, Any]
+# _ConfigurableModel = Runnable[LanguageModelInput, Any]  # Workaround for private class import
 
 class MissingModelNameError(LangChainException):
     """Raised when the model name (identifier) is missing or empty."""
@@ -73,8 +74,8 @@ def init_llm(
         api_key: An optional API key for the model.
         requests_per_second: The maximum number of requests per second to allow.
                               If provided, a rate limiter will be created.
-                              Note: It is recommended to provide either
-                              `requests_per_second` or `rate_limiter`, but not both.
+                              Note: You should provide either `requests_per_second` or
+                              `rate_limiter`, but not both.
         rate_limiter: An optional rate limiter to use.
                       If both requests_per_second and rate_limiter are provided,
                       rate_limiter takes precedence.
@@ -88,6 +89,10 @@ def init_llm(
         An initialized BaseChatModel. If `return_runnable` is True or if any of
         `retry_exception_types`, `wait_exponential_jitter`, or `stop_after_attempt`
         are provided, a Runnable with retry logic is returned instead.
+
+        `Input` represents the input type (e.g., `PromptValue`, `str`, `List[ChatMessage]`)
+        and `Output` represents the output type (e.g., `BaseMessage`, `str`) of the
+        language model.
 
     Raises:
         MissingModelNameError: If the `model` argument is empty or not provided.
@@ -115,11 +120,30 @@ def init_llm(
         - 'ollama' -> langchain-ollama
 
         The function will attempt to infer the model provider if not explicitly specified.
+
+        Examples:
+            # Initialize a model with default settings
+            llm = init_llm("gpt-3.5-turbo")
+
+            # Initialize a model with custom settings and retry logic
+            from langchain_core.rate_limiters import InMemoryRateLimiter
+            rate_limiter = InMemoryRateLimiter(requests_per_second=10)
+            llm_with_retry = init_llm(
+                "openai/gpt-4",
+                temperature=0.5,
+                max_tokens=1024,
+                api_key="your_api_key",
+                rate_limiter=rate_limiter,
+                retry_exception_types=(ConnectionError,),
+                stop_after_attempt=5,
+                return_runnable=True
+            )
     """
     if not model:
         raise MissingModelNameError("Model path cannot be empty")
 
-    # Split the model string, but don't assume a provider is always specified
+    # Split the model string into provider and model name.
+    # If no provider is specified (only one part), it will attempt to infer the provider from the model name.
     parts = model.split("/")
     if len(parts) > 1:
         provider, model_name = parts[0], "/".join(parts[1:])
@@ -138,9 +162,8 @@ def init_llm(
     if api_key is not None:
         init_kwargs["api_key"] = api_key
 
-
     if requests_per_second is not None and rate_limiter is not None:
-        print("Warning: Both 'requests_per_second' and 'rate_limiter' were provided. 'rate_limiter' takes precedence.")
+        logging.warning("Both 'requests_per_second' and 'rate_limiter' were provided. 'rate_limiter' takes precedence.")
 
     if rate_limiter is None and requests_per_second is not None:
         rate_limiter = InMemoryRateLimiter(
@@ -159,7 +182,7 @@ def init_llm(
             **init_kwargs
         )
 
-        # Correctly handle default values for retry arguments
+        # Handle default values for retry arguments
         should_apply_retry = (
                 retry_exception_types is not None
                 or wait_exponential_jitter is not None

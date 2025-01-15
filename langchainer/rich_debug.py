@@ -11,20 +11,19 @@ Key features and guidelines:
 
 This module aims to be a modern example of Python 3.10+ code. Refrain from using outdated patterns or workarounds typical of earlier Python 3 versions.
 """
-import os
 import re
 import json
 import logging
 from datetime import datetime
-from typing import Any, TypedDict
-
-from pydantic import BaseModel
+from typing import Any, TypedDict, Literal
+from pydantic import BaseModel, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.prompts import (
     SystemMessagePromptTemplate, HumanMessagePromptTemplate, AIMessagePromptTemplate,
     PromptTemplate, ChatPromptTemplate
 )
-
+from pygments.styles import get_all_styles
 from rich.logging import RichHandler
 from rich.markdown import Markdown
 from rich.console import Console
@@ -34,57 +33,54 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-class ConfigSettings(TypedDict):
-    LOG_LEVEL: str
-    SYNTAX_THEME: str
-    MARKDOWN_PROMPT: bool
-    MARKDOWN_RESPONSE: bool
-    SHOW_PROMPT_VALUES: bool
-    PANEL_PADDING: int | tuple[int, ...]
+DEFAULT_SYNTAX_THEME = "github-dark"
+DEFAULT_PANEL_PADDING = 0
 
-def load_config_from_env() -> ConfigSettings:
-    """Load configuration from environment variables."""
-    default_syntax_theme = "github-dark"
-    config_settings: ConfigSettings = {
-        "LOG_LEVEL": os.environ.get("LOG_LEVEL", "INFO").upper(),
-        "SYNTAX_THEME": os.environ.get("SYNTAX_THEME", default_syntax_theme).lower(),
-        "MARKDOWN_PROMPT": os.environ.get("MARKDOWN_PROMPT", "true").lower() == "true",
-        "MARKDOWN_RESPONSE": os.environ.get("MARKDOWN_RESPONSE", "true").lower() == "true",
-        "SHOW_PROMPT_VALUES": os.environ.get("SHOW_PROMPT_VALUES", "true").lower() == "true",
-        "PANEL_PADDING": os.environ.get("PANEL_PADDING", 0),
-    }
 
-    padding_value = config_settings["PANEL_PADDING"]
-    if isinstance(padding_value, str):
-        try:
-            # First, try to convert it to a single integer
-            config_settings["PANEL_PADDING"] = int(padding_value)
-        except ValueError:
-            # If that fails, try to convert it to a tuple of integers
-            try:
-                padding_tuple = tuple(map(int, padding_value.strip('()').split(',')))
-                if not (1 <= len(padding_tuple) <= 4):
-                    raise ValueError("Padding tuple must have between 1 and 4 elements")
-                config_settings["PANEL_PADDING"] = padding_tuple
-            except ValueError:
-                print(f"Warning: Invalid PANEL_PADDING env var '{padding_value}'. Using default '0'.")
-                config_settings["PANEL_PADDING"] = 0
+class ConfigSettings(BaseSettings):
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field("INFO", alias="LOG_LEVEL")
+    syntax_theme: str = Field(DEFAULT_SYNTAX_THEME, alias="SYNTAX_THEME")
+    markdown_prompt: bool = Field(True, alias="MARKDOWN_PROMPT")
+    markdown_response: bool = Field(True, alias="MARKDOWN_RESPONSE")
+    show_prompt_values: bool = Field(True, alias="SHOW_PROMPT_VALUES")
+    panel_padding: int | tuple[int, ...] = Field(0, alias="PANEL_PADDING")
 
-    if config_settings["SYNTAX_THEME"] != default_syntax_theme:
-        from pygments.styles import get_all_styles  # Moved import here
-        if config_settings["SYNTAX_THEME"] not in get_all_styles():
-            print(f"Warning: Invalid SYNTAX_THEME env var '{config_settings['SYNTAX_THEME']}'. Using default '{default_syntax_theme}'.")
-            config_settings["SYNTAX_THEME"] = default_syntax_theme
+    @field_validator("syntax_theme", mode="before")
+    def validate_syntax_theme(cls, value):
+        value = value.lower()
+        if value not in get_all_styles():
+            logging.warning(f"Invalid SYNTAX_THEME env var '{value}'. Using default '{DEFAULT_SYNTAX_THEME}'.")
+            return DEFAULT_SYNTAX_THEME
+        return value
 
-    return config_settings
+    @field_validator("panel_padding", mode="before")
+    def validate_panel_padding(cls, value):
+        if isinstance(value, str):
+            try:  # First, try to convert it to a single integer
+                return int(value)
+            except ValueError:  # If that fails, try to convert it to a tuple of integers
+                try:
+                    padding_tuple = tuple(map(int, value.strip("()").split(",")))
+                    if not (1 <= len(padding_tuple) <= 4):
+                        raise ValueError("Padding tuple must have between 1 and 4 elements")
+                    return padding_tuple
+                except ValueError:
+                    logging.warning(f"Invalid PANEL_PADDING env var '{value}'. Using default '{DEFAULT_PANEL_PADDING}'.")
+                    return DEFAULT_PANEL_PADDING
+        return value
 
-config = load_config_from_env()
-LOG_LEVEL = config["LOG_LEVEL"]
-SYNTAX_THEME = config["SYNTAX_THEME"]
-PANEL_PADDING = config["PANEL_PADDING"]
-MARKDOWN_PROMPT = config["MARKDOWN_PROMPT"]
-MARKDOWN_RESPONSE = config["MARKDOWN_RESPONSE"]
-SHOW_PROMPT_VALUES = config["SHOW_PROMPT_VALUES"]
+    model_config = SettingsConfigDict(env_prefix="", case_sensitive=False)
+
+
+config = ConfigSettings()
+
+LOG_LEVEL = config.log_level
+SYNTAX_THEME = config.syntax_theme
+PANEL_PADDING = config.panel_padding
+MARKDOWN_PROMPT = config.markdown_prompt
+MARKDOWN_RESPONSE = config.markdown_response
+SHOW_PROMPT_VALUES = config.show_prompt_values
+
 
 class RichLogHandler:
     """Handles logging events and formats output using Rich."""
@@ -99,16 +95,33 @@ class RichLogHandler:
         self.output_schema = getattr(record, 'output_schema', None)
 
         self.message_types = {
-            HumanMessage: ("👤 Human", "green"),
+            HumanMessage : ("👤 Human", "green"),
             SystemMessage: ("⚙ System", "blue"),
-            AIMessage: ("🤖 AI", "magenta")
+            AIMessage    : ("🤖 AI", "magenta")
         }
         self.prompt_template_types = {
-            HumanMessagePromptTemplate: ("👤 Human Template", "green"),
+            HumanMessagePromptTemplate : ("👤 Human Template", "green"),
             SystemMessagePromptTemplate: ("⚙ System Template", "blue"),
-            AIMessagePromptTemplate: ("🤖 AI Template", "magenta")
+            AIMessagePromptTemplate    : ("🤖 AI Template", "magenta")
         }
         self.default_message_type = ("✏️ Message", "cyan")
+
+    def handle_log_event(self) -> bool:
+        """Main handler function to process log records."""
+
+        match self.log_event:
+            case "prompt_template":
+                self._handle_prompt_template()
+            case "prompt":
+                self._handle_prompt()
+            case "structured_response":
+                self._handle_structured_response()
+            case "response" | "unstructured_response":
+                self._handle_response()
+            case _:
+                return False
+
+        return True
 
     @staticmethod
     def _highlight_template_variables(text: str) -> Text:
@@ -134,9 +147,9 @@ class RichLogHandler:
                 # Fallback; response_metadata seems to be a provider-specific
                 usage = llm_response.usage_metadata
                 return {
-                   "prompt_tokens": usage.get("input_tokens"),
-                   "completion_tokens": usage.get("output_tokens"),
-                   "total_tokens": usage.get("total_tokens"),
+                    "prompt_tokens"    : usage.get("input_tokens"),
+                    "completion_tokens": usage.get("output_tokens"),
+                    "total_tokens"     : usage.get("total_tokens"),
                 }, 'N/A'
 
         return None
@@ -150,8 +163,13 @@ class RichLogHandler:
                 f" + {token_usage.get('completion_tokens', 'N/A')}"
                 f" = [bold]{token_usage.get('total_tokens', 'N/A')}[/bold]")
 
+    #
+    #   Handlers for specific log events
+    #
+
     def _handle_prompt_template(self):
         """Handles and displays a prompt template."""
+
         class PromptComponents(TypedDict):
             system_message: str
             prompt: str | ChatPromptTemplate | PromptTemplate
@@ -200,13 +218,15 @@ class RichLogHandler:
                 self.console.print(f"[bold]Raw Prompt Values:[/bold] {self.prompt_values}")
                 json_str = json.dumps({"error": error_message}, indent=2)
 
-            prompt_values_syntax = Syntax(json_str, "json", theme=SYNTAX_THEME, line_numbers=False, padding=PANEL_PADDING)
+            prompt_values_syntax = Syntax(json_str, "json", theme=SYNTAX_THEME,
+                                          line_numbers=False, word_wrap=True, padding=PANEL_PADDING)
             grid.add_row(prompt_values_syntax)
 
         self.console.print("")
         self.console.print(Panel(
             grid,
-            title=f"📝 Prompt Template - {self.current_time}", border_style="yellow", title_align="center", padding=(1, 1),
+            title=f"📝 Prompt Template - {self.current_time}", border_style="yellow", title_align="center", padding=(
+            1, 1),
             subtitle=f"Prompt type: [bold]{type(log_data['prompt']).__name__}[/bold]", subtitle_align="right"
         ))
         self.console.print("")
@@ -245,12 +265,13 @@ class RichLogHandler:
             data = json.loads(response)
             json_str = json.dumps(data, indent=2)
 
-            syntax = Syntax(json_str, lexer="json", theme=SYNTAX_THEME, line_numbers=False)
+            syntax = Syntax(json_str, lexer="json", theme=SYNTAX_THEME, line_numbers=False, word_wrap=True)
             panel = Panel(
                 syntax,
-                title=f"🗂️ LLM Response (Structured) - {self.current_time}", title_align="left",
-                border_style="green",
-                subtitle=f"Output schema: [bold]{self.output_schema.__name__}[/bold]", subtitle_align="right"
+                title=f"🗂  LLM Response (Structured) - {self.current_time}", title_align="left",
+                border_style="green bold", padding=PANEL_PADDING,
+                subtitle=f"Output schema: [bold]{self.output_schema.__name__}[/bold]", subtitle_align="right",
+                expand=True
             )
             self.console.print(panel)
         except json.JSONDecodeError:
@@ -283,31 +304,16 @@ class RichLogHandler:
         )
         self.console.print(panel)
 
-    def debug_rich_handler(self) -> bool:
-        """Main handler function to process log records."""
-        match self.log_event:
-            case "prompt_template":
-                self._handle_prompt_template()
-            case "prompt":
-                self._handle_prompt()
-            case "structured_response":
-                self._handle_structured_response()
-            case "response" | "unstructured_response":
-                self._handle_response()
-            case _:
-                return False
-
-        return True
 
 class DebugRichHandler(RichHandler):
     """Custom RichHandler to integrate with the RichLogHandler class."""
 
     def __init__(self, *args, **kwargs):
         custom_theme = Theme({
-            "logging.level.debug": "violet",
-            "logging.level.info": "blue",
-            "logging.level.warning": "yellow",
-            "logging.level.error": "red",
+            "logging.level.debug"   : "violet",
+            "logging.level.info"    : "blue",
+            "logging.level.warning" : "yellow",
+            "logging.level.error"   : "red",
             "logging.level.critical": "bold red",
         })
         self.console = Console(theme=custom_theme)
@@ -323,7 +329,7 @@ class DebugRichHandler(RichHandler):
         """Handles the emission of log records."""
         try:
             handler = RichLogHandler(record, self.console)
-            if not handler.debug_rich_handler():
+            if not handler.handle_log_event():
                 super().emit(record)
         except Exception as e:
             self.console.print(f"[bold red]Error during logging:[/bold red] {str(e)}", style="red")

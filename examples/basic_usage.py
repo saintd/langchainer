@@ -4,9 +4,9 @@ import logging
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-load_dotenv()
-
 from langchainer import LLMClient, init_logger
+
+load_dotenv()
 
 async def main():
 
@@ -23,7 +23,7 @@ async def main():
     system_message = "You are a knowledgeable and concise assistant well-versed in historical advancements."
     prompt = "What are some notable historical events in the {event}?"
     event = "AI development"
-    result = await client.arun(prompt, {"event": event}, system_message=system_message)
+    result = await client.run(prompt, {"event": event}, system_message=system_message)
 
     # print(f"Model: {args.model}\nResponse:\n", result, "\n")
 
@@ -32,7 +32,7 @@ async def main():
         key_players: list[str] = Field(..., description="Important companies, individuals, or organizations")
         relevance_score: float = Field(..., ge=0, le=1, description="Overall relevance score (0.0-1.0)")
 
-    result = await client.arun(prompt, {"event": event}, EventAnalysis)
+    result = await client.run(prompt, {"event": event}, EventAnalysis)
 
     # print(f"Model: {args.model}")
     # print(f"Response:")

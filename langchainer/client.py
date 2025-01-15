@@ -6,11 +6,10 @@ Key Features:
 - Implements retry mechanisms for handling transient errors.
 
 Example:
-    client = LLMClient("mistral/mistral-small-latest")
-    response = client.run("What is the meaning of life?")
+    client = LLMClient("mistral-small-latest")
+    response = await client.run("What is the meaning of life?")
     print(response)
 """
-import asyncio
 
 """
 Contributors guidelines:
@@ -22,21 +21,11 @@ Contributors guidelines:
 *   **General Style:** Follow PEP 8 guidelines.
 """
 
-"""
-    TODO: Investigate why we need to import langchainer only after load_dotenv()
-        Otherwise, env vars are not available.
-    
-    from dotenv import load_dotenv
-    load_dotenv()
-
-    from langchainer import LLMClient
-
-
-"""
 import json
 import httpx
 import logging
-
+import asyncio
+import textwrap
 from pydantic import BaseModel, Field
 from typing import Any, Type, TypeVar, overload, Literal
 
@@ -45,12 +34,6 @@ from langchain_core.rate_limiters import InMemoryRateLimiter
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-
-# from langchain_core.output_parsers import PydanticOutputParser
-# from langchain_core.prompts import ChatPromptTemplate
-# from langchain_core.language_models import BaseChatModel
-# from langfuse.callback import CallbackHandler
-# from langchain.schema import ChatMessage
 
 from langchainer.logger import init_logger
 from langchainer.llm_initializer import init_llm
@@ -74,8 +57,9 @@ class JSONDecodeError(json.JSONDecodeError):
     This redeclaration allows simpler inclusion of this exception in
     RetryConfig's retry_exceptions without importing it from the json package.
 
-    Note: The LLM may initially return invalid JSON, but retries can yield valid JSON.
-        Using this exception in RetryConfig's retry_exceptions allows for such retries.
+    Note: The LLM might initially return invalid JSON, but retries can result in valid JSON.
+        Including this exception in RetryConfig's retry_exceptions facilitates such retries.
+        However, this behavior depends on the provider/LLM.
 
     Example:
         retry_config = RetryConfig(
@@ -84,11 +68,6 @@ class JSONDecodeError(json.JSONDecodeError):
         )
     """
     pass
-
-
-class StringResponse(BaseModel):
-    """A simple model to represent a raw string response from an LLM."""
-    content: str = Field(..., description="The raw string content returned by the LLM")
 
 
 class RetryConfig(BaseModel):
@@ -104,43 +83,48 @@ class RetryConfig(BaseModel):
     max_wait: int = Field(10, ge=0)
     retry_exceptions: list[type[BaseException]] = Field(..., description="List of exception types to retry on")
 
+
 class LLMClient:
     """Interface for LLM interactions"""
 
-    def __init__(self, model: str | BaseChatModel,
+    def __init__(self, model: str,
                  *,
                  temperature: float | None = None,
                  max_tokens: int | None = None,
+                 api_key: str | None = None,
                  logger: logging.Logger | None = None,
-                 log_level: int = logging.INFO,
+                 log_level: int | None = None,
                  rate_limiter: InMemoryRateLimiter | None = None,
-                 retry_config: RetryConfig | None = None,
-                 requests_per_second: int | None = None):
+                 requests_per_second: int | None = None,
+                 retry_config: RetryConfig | None = None):
         """
         Initialize the LLMClient.
 
         Args:
-            model (str | BaseChatModel): The LLM model to use.
+            model (str): The LLM model to use. It should be in the format 'provider/model' (e.g., 'openai/gpt-3.5-turbo'),
+            or just the model name (e.g., 'gpt-3.5-turbo'). Refer to the documentation of `init_llm`
+            for details on supported providers and model names.
+
             temperature (float | None): The temperature for the LLM. Defaults to None.
             max_tokens (int | None): The maximum number of tokens for the LLM. Defaults to None.
             logger (logging.Logger | None): The logger to use. When None, a default logger will be created.
                 Defaults to None.
-            log_level (int): The log level. Defaults to logging.INFO.
+            log_level (int | None): The log level.
             rate_limiter (InMemoryRateLimiter | None): The rate limiter to use. Defaults to None.
+            requests_per_second (int | None): The number of requests per second. Defaults to None.
+            # Note: Providing a non-None `requests_per_second` here will eventually create an `InMemoryRateLimiter`
+            # with this setting in the `init_llm` call.
 
-            retry_config (RetryConfig | None): Configuration for retry attempts. Defaults to RetryConfig(attempts=5, multiplier=1, min_wait=2, max_wait=10).
+            retry_config (RetryConfig | None): Configuration for retry attempts.
+            Defaults to RetryConfig(attempts=5, multiplier=1, min_wait=2, max_wait=10, retry_exceptions=[RateLimitError]).
                 Example:
                     retry_config=RetryConfig(attempts=3, multiplier=0.5, min_wait=1, max_wait=5)
 
                     # Effectively disables retry by making 0 attempts
                     retry_config=RetryConfig(attempts=0)
-
-            requests_per_second (int | None): The number of requests per second. Defaults to None.
-            # Note: Providing a non-None `requests_per_second` here will eventually create an `InMemoryRateLimiter`
-            # with this setting in the `init_llm` call.
         """
         self.logger = logger or init_logger(log_level)
-        self.logger.info(f"Initializing LLM with model: {model}")
+        self.logger.debug(f"Initializing LLM with model: {model}")
 
         self.default_retry_config = retry_config or RetryConfig(
             attempts=5, multiplier=1, min_wait=2, max_wait=10,
@@ -151,11 +135,12 @@ class LLMClient:
             model,
             temperature=temperature,
             max_tokens=max_tokens,
+            api_key=api_key,
             rate_limiter=rate_limiter,
             requests_per_second=requests_per_second
         )
 
-        # Create an event loop specifically for the synchronous `run` method.
+        # Create an event loop specifically for the synchronous `run_sync` method. See the TODO there.
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
@@ -198,10 +183,6 @@ class LLMClient:
             if system_values:
                 raise ValueError("system_values should not be provided when using ChatPromptTemplate or PromptTemplate")
 
-        # Serialize BaseModel instances in values
-        values = LLMClient._serialize_values(values)
-        system_values = LLMClient._serialize_values(system_values)
-
         if apply_xml_tags is True or (
                 apply_xml_tags == "auto"
                 and _should_apply_xml_tags(prompt, values, system_message, system_values)
@@ -217,16 +198,16 @@ class LLMClient:
         elif isinstance(prompt, PromptTemplate):
             messages.append(HumanMessage(content=prompt.format(**values)))
         else:  # Handle string prompt
+            prompt = textwrap.dedent(prompt).strip()
             if system_message:
+                system_message = textwrap.dedent(system_message).strip()
                 messages.append(SystemMessage(content=system_message.format(**system_values)))
             messages.append(HumanMessage(content=prompt.format(**values)))
         return messages
 
     @staticmethod
     def _serialize_values(values: dict[str, Any]) -> dict[str, Any]:
-        """
-        Serializes BaseModel objects within the template arguments recursively.
-        """
+        """Serializes BaseModel objects within the template arguments recursively."""
         serialized_args = {}
         for key, value in values.items():
             if isinstance(value, BaseModel):
@@ -316,7 +297,7 @@ class LLMClient:
         - str: system_message and system_values CAN be provided.
     """
     @overload
-    async def arun(
+    async def run(
             self,
             prompt: ChatPromptTemplate,
             values: dict[str, Any] = None,
@@ -327,7 +308,7 @@ class LLMClient:
         ...
 
     @overload
-    async def arun(
+    async def run(
             self,
             prompt: PromptTemplate,
             values: dict[str, Any] = None,
@@ -338,7 +319,7 @@ class LLMClient:
         ...
 
     @overload
-    async def arun(
+    async def run(
             self,
             prompt: str,
             values: dict[str, Any] = None,
@@ -357,7 +338,7 @@ class LLMClient:
 
         Examples:
             1. Basic usage with a string output schema:
-                >>> client = LLMClient("mistral/mistral-small-latest")
+                >>> client = LLMClient("mistral-small-latest")
                 >>> response = client.run("What is the meaning of life?")
                 >>> print(response)
                 42
@@ -367,43 +348,43 @@ class LLMClient:
                 >>> class Entity(BaseModel):
                 ...     name: str
                 ...     description: str
-                >>> client = LLMClient("mistral/mistral-small-latest")
+                >>> client = LLMClient("mistral-small-latest")
                 >>> response = client.run("What is the meaning of life?", output_schema=Entity)
                 >>> print(response)
                 Entity(name='Answer', description='42')
                 
             3. Basic usage with values and output_schema:
-                >>> response = await client.arun("What is the meaning of {term}?", {'term': 'life'}, Entity)
+                >>> response = await client.run("What is the meaning of {term}?", {'term': 'life'}, Entity)
     """
     @overload
-    async def arun(self,
-                   prompt: str,
-                   values: dict[str, Any],
-                   output_schema: Type[T],
-                   system_message: str = None,
-                   system_values: dict[str, Any] = None
-                   ) -> T:
+    async def run(self,
+                  prompt: str,
+                  values: dict[str, Any],
+                  output_schema: Type[T],
+                  system_message: str = None,
+                  system_values: dict[str, Any] = None
+                  ) -> T:
         ...
 
     @overload
-    async def arun(self,
-                   prompt: str,
-                   values: dict[str, Any] = None,
-                   output_schema: Type[str] = str,
-                   system_message: str = None,
-                   system_values: dict[str, Any] = None
-                   ) -> str:
+    async def run(self,
+                  prompt: str,
+                  values: dict[str, Any] = None,
+                  output_schema: Type[str] = str,
+                  system_message: str = None,
+                  system_values: dict[str, Any] = None
+                  ) -> str:
         ...
 
-    async def arun(self,
-                   prompt: str | ChatPromptTemplate | PromptTemplate,
-                   values: dict[str, Any] | None = None,
-                   output_schema: Type[T] | Type[str] = str,
-                   system_message: str | None = None,
-                   system_values: dict[str, Any] | None = None,
-                   apply_xml_tags: bool | Literal['auto'] = False,
-                   retry_config: RetryConfig | None = None,
-                   ) -> T | str:
+    async def run(self,
+                  prompt: str | ChatPromptTemplate | PromptTemplate,
+                  values: dict[str, Any] | None = None,
+                  output_schema: Type[T] | Type[str] = str,
+                  system_message: str | None = None,
+                  system_values: dict[str, Any] | None = None,
+                  apply_xml_tags: bool | Literal['auto'] = False,
+                  retry_config: RetryConfig | None = None,
+                  ) -> T | str:
         """
         Asynchronously invoke the LLM with a prompt and parse the response.
 
@@ -432,7 +413,7 @@ class LLMClient:
 
         Examples (illustrative):
             Basic usage with a string prompt:
-            response = client.run("What is the capital of France?")
+            response = client.run_sync("What is the capital of France?")
             print(response) # Paris
 
             Usage with a `ChatPromptTemplate` and values:
@@ -440,7 +421,7 @@ class LLMClient:
             from langchain_core.prompts import ChatPromptTemplate
             async def test():
             ...     template = ChatPromptTemplate.from_template("Tell me a joke about {topic}")
-            ...     response = await client.arun(template, {"topic": "programming"})
+            ...     response = await client.run(template, {"topic": "programming"})
             ...     print(response) # Or assert something about the response
             asyncio.run(test())
 
@@ -454,7 +435,7 @@ class LLMClient:
             print(response.punchline)
 
             Usage with a system message and XML tags:
-            response = client.run(
+            response = await client.run(
             ...     "Translate '{text}' to {language}",
             ...     {"text": "Hello, world!", "language": "Spanish"},
             ...     system_message="You are a helpful translation assistant.",
@@ -463,17 +444,18 @@ class LLMClient:
 
             Usage with a custom retry configuration:
             _retry_config = RetryConfig(attempts=3, min_wait=1, max_wait=3, retry_exceptions=[RateLimitError])
-            response = client.run("What is the meaning of life?", retry_config=_retry_config)
+            response = await client.run("What is the meaning of life?", retry_config=_retry_config)
         """
 
-        values = values or {}
-        system_values = system_values or {}
+        # Serialize BaseModel instances in values
+        values = LLMClient._serialize_values(values or {})
+        system_values = LLMClient._serialize_values(system_values or {})
 
         _retry_decorator = self._create_retry_decorator(retry_config)
 
         @_retry_decorator
-        async def _arun_with_retry():
-            """ Internal retry wrapper for arun """
+        async def _run_with_retry():
+            """ Internal retry wrapper for `run` """
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     {'system_message': system_message, 'prompt': prompt},
@@ -494,24 +476,52 @@ class LLMClient:
 
             return await self._invoke_llm(messages, output_schema)
 
-        return await _arun_with_retry()
+        return await _run_with_retry()
 
-    def run(self,
-            prompt: str | ChatPromptTemplate | PromptTemplate,
-            values: dict[str, Any] | None = None,
-            output_schema: Type[T] | Type[str] = str,
-            system_message: str | None = None,
-            system_values: dict[str, Any] | None = None,
-            apply_xml_tags: bool | Literal['auto'] = False,
-            retry_config: RetryConfig | None = None
-            ) -> T | str:
+    # def run_sync(self, *args, **kwargs) -> T | str:
+    #     """
+    #     Synchronous wrapper for `run`.
+    #
+    #     Note: Usage examples can be found in the `run` method docstring.
+    #     """
+    #     try:
+    #         # Check if an event loop is already running
+    #         loop = asyncio.get_running_loop()
+    #         # If we are in an event loop, we cannot use run_until_complete
+    #         # A simple solution for this case is to create a new loop
+    #         if loop.is_running():
+    #             return asyncio.run(self.run(*args, **kwargs))
+    #         else:
+    #             # If no loop is running, we can use the existing loop
+    #             return loop.run_until_complete(self.run(*args, **kwargs))
+    #     except RuntimeError:
+    #         # No event loop is running, so create a new one
+    #         return asyncio.run(self.run(*args, **kwargs))
+    #     except Exception as e:
+    #         self.logger.error(f"Error in run_sync: {e}", exc_info=True)
+    #         raise
+
+    # TODO: Get rid of `self._loop` in constructor, make `run_sync` detect
+    #  existing event loop or create a new one if needed.
+    #  The commented-out `run_sync` below tried to use `asyncio.get_running_loop()`,
+    #  but it resulted in errors when 2+ consecutive `run_sync` calls (loop conflicts?)
+
+    def run_sync(self,
+                 prompt: str | ChatPromptTemplate | PromptTemplate,
+                 values: dict[str, Any] | None = None,
+                 output_schema: Type[T] | Type[str] = str,
+                 system_message: str | None = None,
+                 system_values: dict[str, Any] | None = None,
+                 apply_xml_tags: bool | Literal['auto'] = False,
+                 retry_config: RetryConfig | None = None
+                 ) -> T | str:
         """
-        Synchronous wrapper for `arun`.
+        Synchronous wrapper for `run`.
 
-        Note: Usage examples can be found in the `arun` method docstring.
+        Note: Usage examples can be found in the `run` method docstring.
         """
         try:
-            result = self._loop.run_until_complete(self.arun(
+            result = self._loop.run_until_complete(self.run(
                 prompt=prompt,
                 values=values,
                 output_schema=output_schema,
@@ -525,19 +535,6 @@ class LLMClient:
             self.logger.error(f"Error in run: {e}", exc_info=True)
             raise
 
-    # def _handle_exception(self, e):
-    #     if not isinstance(e, (RateLimitError)):
-    #         self.logger.error(f"An error occurred: {e}", exc_info=True)
-    #         raise
-
-    # def invoke(self, *args, **kwargs) -> T | str:
-    #     """Synchronous wrapper for arun, kept for backward compatibility."""
-    #     return self.run(*args, **kwargs)
-    #
-    # async def ainvoke(self, *args, **kwargs) -> T | str:
-    #     """Asynchronous method for arun, kept for backward compatibility."""
-    #     return await self.arun(*args, **kwargs)
-
     def close(self):
         """Closes the event loop."""
         if self._loop:
@@ -545,6 +542,14 @@ class LLMClient:
 
     def __del__(self):
         self.close()
+
+    def invoke(self, *args, **kwargs) -> T | str:
+        """Synchronous wrapper for run_sync, kept for backward compatibility."""
+        return self.run_sync(*args, **kwargs)
+
+    async def ainvoke(self, *args, **kwargs) -> T | str:
+        """Asynchronous method for run, kept for backward compatibility."""
+        return await self.run(*args, **kwargs)
 
 
 

@@ -1,20 +1,23 @@
 import asyncio
+import os
+
 from models import TaskPlan, TaskEvaluation, prompt, evaluation_prompt
 from dotenv import load_dotenv
 import logging
-load_dotenv()
-
 from langchainer import LLMClient
 
+load_dotenv()
 
-# client = LLMClient("mistral/mistral-small-latest", log_level=logging.DEBUG)
-client = LLMClient("mistral-small-latest", log_level=logging.DEBUG)
+# os.environ["RICH_LOGGING_ENABLED"] = "true"
+# os.environ["LOG_LEVEL"] = "DEBUG"
 
-# task_plan = client.run(prompt, {"topic": "AI ethics"}, TaskPlan)
-# task_evaluation = client.run(evaluation_prompt, {"task_plan": task_plan}, TaskEvaluation)
+client = LLMClient("mistral-small-latest")
 
-async def main():
-    task_plan = await client.arun(prompt, {"topic": "AI ethics"}, TaskPlan)
-    task_evaluation = await client.arun(evaluation_prompt, {"task_plan": task_plan}, TaskEvaluation)
+task_plan = client.run_sync(prompt, {"topic": "AI ethics"}, TaskPlan)
+task_evaluation = client.run_sync(evaluation_prompt, {"task_plan": task_plan}, TaskEvaluation)
 
-asyncio.run(main())
+# async def main():
+#     task_plan = await client.run(prompt, {"topic": "AI ethics"}, TaskPlan)
+#     task_evaluation = await client.run(evaluation_prompt, {"task_plan": task_plan}, TaskEvaluation)
+#
+# asyncio.run(main())

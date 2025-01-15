@@ -19,36 +19,46 @@ classifiers = [
     "Operating System :: OS Independent"
 ]
 
-dependencies = [
-    "pydantic >=2.10.4",
-    "langchain >=0.3.13",
-    "langchain-core >=0.3.28",
-]
-
+[project.urls]
+"Homepage" = "https://github.com/saintd/langchainer"
+"Bug Tracker" = "https://github.com/saintd/langchainer/issues"
 
 [tool.poetry]
 name = "langchainer"
 version = "0.0.1"
 description = "Best of 4 worlds [LangChain, LiteLLM, Instructor, Rich] in 1 helper + 1 client with easy debugging."
-authors = ["Pavel Mironov <66and55@gmail.com>"]
+authors = ["Pavel Mironov <mironov.pv@gmail.com>"]
 readme = "README.md"
 packages = [{ include = "langchainer" }]
 
 [tool.poetry.dependencies]
-python = "^3.13"
+python = ">=3.10,<4.0"
+pydantic = ">=2.10.4"
+langchain = ">=0.3.13"
+langchain-core = ">=0.3.28"
 
-[project.optional-dependencies]
-rich = ["rich >=13.9.4", "pygments >=2.18.0"]
-mistral = ["langchain-mistralai >=0.2.4"]
-google_genai = ["langchain-google-genai"]
-openrouter = ["langchain-openrouter"]
-anthropic = ["langchain-anthropic"]
-together = ["langchain-together"]
-openai = ["langchain-openai"]
+[tool.poetry.group.rich.dependencies]
+rich = ">=13.9.4"
+pygments = ">=2.18.0"
+pydantic_settings = ">=2.5.0"
 
-[project.urls]
-"Homepage" = "https://github.com/saintd/langchainer"
-"Bug Tracker" = "https://github.com/saintd/langchainer/issues"
+[tool.poetry.group.mistral.dependencies]
+langchain-mistralai = ">=0.2.4"
+
+[tool.poetry.group.google_genai.dependencies]
+langchain-google-genai = ">=0.0.8"
+
+[tool.poetry.group.openrouter.dependencies]
+langchain-openrouter = ">=0.0.1"
+
+[tool.poetry.group.anthropic.dependencies]
+langchain-anthropic = ">=0.1.7"
+
+[tool.poetry.group.together.dependencies]
+langchain-together = ">=0.0.4"
+
+[tool.poetry.group.openai.dependencies]
+langchain-openai = ">=0.0.5"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.4"

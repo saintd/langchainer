@@ -43,7 +43,7 @@ topic = "AI ethics"
 # LangChainer way
 client = LLMClient("mistral/mistral-small-latest", log_level=logging.DEBUG)
 
-result = client.run(prompt, {"topic": topic}, TaskPlan)
+result = client.run_sync(prompt, {"topic": topic}, TaskPlan)
 
 
 
