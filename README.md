@@ -3,9 +3,9 @@
 [![PyPI version](https://badge.fury.io/py/langchainer.svg)](https://badge.fury.io/py/langchainer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Draft: Incredible simplicity for LLM interaction and enhanced debugging, especially with structured output.
 
 LangChainer is a lightweight Python library that streamlines your interactions with Large Language Models (LLMs) by bringing together the best of **LangChain**, **LiteLLM**, **Instructor**, and **Rich** into a single, easy-to-use package. It provides a unified interface for working with various LLM providers, simplifies structured output handling, and enhances debugging with beautiful, informative logging.
+Offers incredible simplicity for LLM interaction and enhanced debugging, especially with structured output.
 
 **Key Features:**
 
@@ -62,12 +62,12 @@ from langchainer import LLMClient
 client = LLMClient("mistral/mistral-small-latest")  # Or "openai/gpt-3.5-turbo", etc.
 
 # --- Example 1: Simple String Prompt ---
-response = client.run_sync("What is the meaning of life?")
+response = await client.run("What is the meaning of life?")
 print(response)
 
 # --- Example 2: Using a ChatPromptTemplate ---
 template = ChatPromptTemplate.from_template("Tell me a joke about {topic}")
-response = client.run_sync(template, {"topic": "programming"})
+response = await client.run(template, {"topic": "programming"})
 print(response)
 
 
