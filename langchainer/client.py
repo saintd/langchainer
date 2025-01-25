@@ -29,7 +29,6 @@ import textwrap
 from pydantic import BaseModel, Field
 from typing import Any, Type, TypeVar, overload, Literal
 
-from langchain_core.language_models import BaseChatModel
 from langchain_core.rate_limiters import InMemoryRateLimiter
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
@@ -81,7 +80,7 @@ class RetryConfig(BaseModel):
     multiplier: float = Field(1, gt=0)
     min_wait: int = Field(2, ge=0)
     max_wait: int = Field(10, ge=0)
-    retry_exceptions: list[type[BaseException]] = Field(..., description="List of exception types to retry on")
+    retry_exceptions: list[type[BaseException]] = Field((RateLimitError,), description="List of exception types to retry on")
 
 
 class LLMClient:
@@ -116,7 +115,7 @@ class LLMClient:
             # with this setting in the `init_llm` call.
 
             retry_config (RetryConfig | None): Configuration for retry attempts.
-            Defaults to RetryConfig(attempts=5, multiplier=1, min_wait=2, max_wait=10, retry_exceptions=[RateLimitError]).
+            When None, defaults to RetryConfig(attempts=5, multiplier=1, min_wait=2, max_wait=10, retry_exceptions=[RateLimitError]).
                 Example:
                     retry_config=RetryConfig(attempts=3, multiplier=0.5, min_wait=1, max_wait=5)
 
@@ -126,10 +125,7 @@ class LLMClient:
         self.logger = logger or init_logger(log_level)
         self.logger.debug(f"Initializing LLM with model: {model}")
 
-        self.default_retry_config = retry_config or RetryConfig(
-            attempts=5, multiplier=1, min_wait=2, max_wait=10,
-            retry_exceptions=[RateLimitError]
-        )
+        self.default_retry_config = retry_config or RetryConfig()
 
         self.llm = init_llm(
             model,
@@ -203,6 +199,7 @@ class LLMClient:
                 system_message = textwrap.dedent(system_message).strip()
                 messages.append(SystemMessage(content=system_message.format(**system_values)))
             messages.append(HumanMessage(content=prompt.format(**values)))
+
         return messages
 
     @staticmethod
@@ -505,6 +502,8 @@ class LLMClient:
     #  existing event loop or create a new one if needed.
     #  The commented-out `run_sync` below tried to use `asyncio.get_running_loop()`,
     #  but it resulted in errors when 2+ consecutive `run_sync` calls (loop conflicts?)
+    #  Python 3.13.1
+
 
     def run_sync(self,
                  prompt: str | ChatPromptTemplate | PromptTemplate,
