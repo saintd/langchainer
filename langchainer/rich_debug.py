@@ -163,6 +163,11 @@ class RichLogHandler:
                 f" + {token_usage.get('completion_tokens', 'N/A')}"
                 f" = [bold]{token_usage.get('total_tokens', 'N/A')}[/bold]")
 
+    @staticmethod
+    def _escape_xml_tags(text: str) -> str:
+        """Escapes XML tags to prevent Markdown interpretation."""
+        return text.replace("<", "&lt;").replace(">", "&gt;")
+
     #
     #   Handlers for specific log events
     #
@@ -239,7 +244,7 @@ class RichLogHandler:
             msg = messages[0]
             title, style = self.message_types.get(type(msg), self.default_message_type)
             title = f"{title} - {self.current_time}"
-            response = Markdown(msg.content) if MARKDOWN_PROMPT else Text(msg.content)
+            response = Markdown(self._escape_xml_tags(msg.content)) if MARKDOWN_PROMPT else Text(msg.content)
 
             self.console.print(Panel(response, title=title, border_style=style, title_align="left", padding=PANEL_PADDING))
         else:
@@ -248,7 +253,7 @@ class RichLogHandler:
 
             for msg in messages:
                 title, style = self.message_types.get(type(msg), self.default_message_type)
-                response = Markdown(msg.content) if MARKDOWN_PROMPT else Text(msg.content)
+                response = Markdown(self._escape_xml_tags(msg.content)) if MARKDOWN_PROMPT else Text(msg.content)
 
                 grid.add_row(Panel(response, title=title, border_style=style, title_align="left", padding=PANEL_PADDING))
 
@@ -293,7 +298,7 @@ class RichLogHandler:
         else:
             response = str(response)
 
-        message = Markdown(response) if MARKDOWN_RESPONSE else response
+        message = Markdown(self._escape_xml_tags(response)) if MARKDOWN_RESPONSE else response
 
         panel = Panel(
             message,
