@@ -95,7 +95,9 @@ class LLMClient:
                  log_level: int | None = None,
                  rate_limiter: InMemoryRateLimiter | None = None,
                  requests_per_second: int | None = None,
-                 retry_config: RetryConfig | None = None):
+                 retry_config: RetryConfig | None = None,
+                 base_url: str | None = None,
+                 ):
         """
         Initialize the LLMClient.
 
@@ -133,7 +135,8 @@ class LLMClient:
             max_tokens=max_tokens,
             api_key=api_key,
             rate_limiter=rate_limiter,
-            requests_per_second=requests_per_second
+            requests_per_second=requests_per_second,
+            base_url=base_url
         )
 
         # Create an event loop specifically for the synchronous `run_sync` method. See the TODO there.
@@ -273,6 +276,7 @@ class LLMClient:
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
+                # TODO: Handle if RateLimitError isn't included in RetryConfig exceptions for retry
                 self.logger.warning("Rate limit exceeded. Retrying...")
                 raise RateLimitError("Rate limit exceeded") from e
             else:
@@ -453,6 +457,7 @@ class LLMClient:
         @_retry_decorator
         async def _run_with_retry():
             """ Internal retry wrapper for `run` """
+
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     {'system_message': system_message, 'prompt': prompt},
@@ -463,14 +468,13 @@ class LLMClient:
                     }
                 )
 
-            # if 1 is not 2:
-            #     return "__DEBUG_MODE_MESSAGE__"
-
             messages = self._prepare_messages(prompt, values, system_message, system_values, apply_xml_tags)
 
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(messages, extra={'log_event': 'prompt', 'output_schema': output_schema})
 
+            # if 1 is not 2:
+            #     return "__DEBUG_MODE_MESSAGE__"
             return await self._invoke_llm(messages, output_schema)
 
         return await _run_with_retry()
