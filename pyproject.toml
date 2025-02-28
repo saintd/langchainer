@@ -1,22 +1,3 @@
-[project]
-name = "langchainer"
-version = "0.0.2"
-description = "Best of 4 worlds [LangChain, LiteLLM, Instructor, Rich] in 1 helper + 1 client with easy debugging."
-readme = "README.md"
-requires-python = ">=3.10"
-keywords = ["llm", "langchain", "litellm", "instructor", "rich", "ai", "machine-learning", "debugging", "openai", "mistral", "together", "anthropic", "openrouter", "google_genai"]
-license = {file = "LICENSE"}
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Operating System :: OS Independent"
-]
 
 [project.urls]
 "Homepage" = "https://github.com/saintd/langchainer"
