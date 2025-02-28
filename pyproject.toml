@@ -24,7 +24,7 @@ classifiers = [
 
 [tool.poetry]
 name = "langchainer"
-version = "0.0.3"
+version = "0.0.4"
 description = "Best of 4 worlds [LangChain, LiteLLM, Instructor, Rich] in 1 helper + 1 client with easy debugging."
 #authors = [{name = "Pavel Mironov", email = "mironov.pv@gmail.com"}]
 authors = ["Pavel Mironov <mironov.pv@gmail.com>"]
