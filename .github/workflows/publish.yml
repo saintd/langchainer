@@ -5,6 +5,7 @@ on:
       - 'v*'
 jobs:
   publish:
+    environment: Release
     runs-on: Ubuntu-22.04
     permissions:
       id-token: write
