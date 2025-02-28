@@ -23,7 +23,6 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent"
 ]
-readme = "README.md"
 packages = [{ include = "langchainer" }]
 
 [tool.poetry.dependencies]
